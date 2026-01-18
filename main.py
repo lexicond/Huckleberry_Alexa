@@ -261,19 +261,20 @@ def log_activity(activity_type: str, details: Dict[str, Any]) -> Dict[str, Any]:
             # Log diaper change
             diaper_type = details.get('type', DEFAULT_DIAPER_TYPE)
 
-            # Prepare parameters based on type
-            params = {'child_id': child_id, 'diaper_type': diaper_type}
+            # Prepare parameters - child_uid must be positional, not keyword
+            kwargs = {'mode': diaper_type}
 
             if diaper_type in ['poo', 'both']:
                 if 'poo_size' in details:
-                    params['poo_consistency'] = details['poo_size']
+                    kwargs['poo_amount'] = details['poo_size']
                 if 'poo_color' in details:
-                    params['poo_color'] = details['poo_color']
+                    kwargs['color'] = details['poo_color']
 
             if diaper_type in ['pee', 'both']:
-                params['pee_amount'] = details.get('pee_amount', DEFAULT_PEE_AMOUNT)
+                kwargs['pee_amount'] = details.get('pee_amount', DEFAULT_PEE_AMOUNT)
 
-            huckleberry_api.log_diaper(**params)
+            # Pass child_id as positional argument
+            huckleberry_api.log_diaper(child_id, **kwargs)
 
             # Build descriptive message
             desc = []
