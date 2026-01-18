@@ -10,6 +10,7 @@ Date: January 2026
 import os
 import re
 import logging
+import secrets
 from datetime import datetime
 from typing import Dict, Tuple, Optional, Any
 
@@ -37,6 +38,13 @@ HUCKLEBERRY_PASSWORD = os.getenv('HUCKLEBERRY_PASSWORD')
 CHILD_NAME = os.getenv('CHILD_NAME')
 WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET')
 PORT = int(os.getenv('PORT', 5000))
+
+# Constants
+DEFAULT_BOTTLE_ML = 120
+OZ_TO_ML_CONVERSION = 29.5735
+DEFAULT_FEED_SIDE = 'left'
+DEFAULT_DIAPER_TYPE = 'poo'
+DEFAULT_PEE_AMOUNT = 'medium'
 
 # Global variables
 huckleberry_api: Optional[HuckleberryAPI] = None
@@ -117,12 +125,12 @@ def parse_command(command: str) -> Tuple[Optional[str], Dict[str, Any]]:
         if ml_match:
             details['amount_ml'] = int(ml_match.group(1))
         elif oz_match:
-            # Convert oz to ml (1 oz = 29.5735 ml)
+            # Convert oz to ml
             oz_amount = float(oz_match.group(1))
-            details['amount_ml'] = int(oz_amount * 29.5735)
+            details['amount_ml'] = int(oz_amount * OZ_TO_ML_CONVERSION)
         else:
             # Default to 120ml
-            details['amount_ml'] = 120
+            details['amount_ml'] = DEFAULT_BOTTLE_ML
 
     # 2. Check for breastfeeding
     feed_keywords = ['feed', 'feeding', 'breast', 'nurse', 'nursing']
@@ -136,7 +144,7 @@ def parse_command(command: str) -> Tuple[Optional[str], Dict[str, Any]]:
             details['side'] = 'left'
         else:
             # Default to left
-            details['side'] = 'left'
+            details['side'] = DEFAULT_FEED_SIDE
 
     # 3. Check for sleep
     sleep_keywords = ['sleep', 'nap', 'sleeping', 'napping']
@@ -160,7 +168,7 @@ def parse_command(command: str) -> Tuple[Optional[str], Dict[str, Any]]:
             details['type'] = 'pee'
         else:
             # Default to poo if just "diaper" mentioned
-            details['type'] = 'poo'
+            details['type'] = DEFAULT_DIAPER_TYPE
 
         # Extract poo details if applicable
         if details['type'] in ['poo', 'both']:
@@ -191,7 +199,7 @@ def parse_command(command: str) -> Tuple[Optional[str], Dict[str, Any]]:
             elif any(word in cmd for word in ['small', 'tiny', 'little']):
                 details['pee_amount'] = 'small'
             else:
-                details['pee_amount'] = 'medium'
+                details['pee_amount'] = DEFAULT_PEE_AMOUNT
 
     if activity_type:
         logger.info(f"Parsed command -> Activity: {activity_type}, Details: {details}")
@@ -227,19 +235,19 @@ def log_activity(activity_type: str, details: Dict[str, Any]) -> Dict[str, Any]:
 
         if activity_type == 'feed':
             # Start breastfeeding session
-            side = details.get('side', 'left')
+            side = details.get('side', DEFAULT_FEED_SIDE)
             huckleberry_api.start_feeding(child_id, side=side)
             message = f"Started {side} breastfeeding session"
 
         elif activity_type == 'bottle':
             # Log bottle feeding
-            amount_ml = details.get('amount_ml', 120)
+            amount_ml = details.get('amount_ml', DEFAULT_BOTTLE_ML)
             huckleberry_api.log_bottle(child_id, amount_ml=amount_ml)
             message = f"Logged {amount_ml}ml bottle feed"
 
         elif activity_type == 'diaper':
             # Log diaper change
-            diaper_type = details.get('type', 'poo')
+            diaper_type = details.get('type', DEFAULT_DIAPER_TYPE)
 
             # Prepare parameters based on type
             params = {'child_id': child_id, 'diaper_type': diaper_type}
@@ -251,7 +259,7 @@ def log_activity(activity_type: str, details: Dict[str, Any]) -> Dict[str, Any]:
                     params['poo_color'] = details['poo_color']
 
             if diaper_type in ['pee', 'both']:
-                params['pee_amount'] = details.get('pee_amount', 'medium')
+                params['pee_amount'] = details.get('pee_amount', DEFAULT_PEE_AMOUNT)
 
             huckleberry_api.log_diaper(**params)
 
@@ -342,9 +350,11 @@ def webhook() -> Response:
                 'message': 'No JSON data provided'
             }), 400
 
-        # Verify webhook secret
+        # Verify webhook secret (using constant-time comparison)
         provided_secret = data.get('secret')
-        if not provided_secret or provided_secret != WEBHOOK_SECRET:
+        if not provided_secret or not secrets.compare_digest(
+            provided_secret, WEBHOOK_SECRET or ""
+        ):
             logger.warning(f"Webhook called with invalid secret from IP: {request.remote_addr}")
             return jsonify({
                 'success': False,
@@ -508,14 +518,15 @@ def test_activity(activity: str) -> Response:
 
     # Extract query parameters based on activity type
     if activity_type == 'feed':
-        details['side'] = request.args.get('side', 'left')
+        details['side'] = request.args.get('side', DEFAULT_FEED_SIDE)
 
     elif activity_type == 'bottle':
-        amount = request.args.get('amount', '120')
+        amount = request.args.get('amount', str(DEFAULT_BOTTLE_ML))
         try:
             details['amount_ml'] = int(amount)
         except ValueError:
-            details['amount_ml'] = 120
+            logger.warning(f"Invalid bottle amount '{amount}', using default {DEFAULT_BOTTLE_ML}ml")
+            details['amount_ml'] = DEFAULT_BOTTLE_ML
 
     elif activity_type == 'diaper':
         # Determine type based on original activity name
@@ -524,7 +535,7 @@ def test_activity(activity: str) -> Response:
         elif activity.lower() == 'pee':
             details['type'] = 'pee'
         else:
-            details['type'] = request.args.get('type', 'poo')
+            details['type'] = request.args.get('type', DEFAULT_DIAPER_TYPE)
 
         # Get size and color if provided
         if 'size' in request.args:
