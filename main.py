@@ -74,11 +74,21 @@ def init_huckleberry() -> bool:
         children = huckleberry_api.get_children()
         logger.info(f"Found {len(children)} children in Huckleberry account")
 
+        # Log the child data to debug what fields are available
+        if children:
+            logger.info(f"Child data structure: {children[0].keys()}")
+
         for child in children:
+            logger.info(f"Checking child: {child.get('name')} (available fields: {list(child.keys())})")
             if child.get('name') == CHILD_NAME:
-                child_id = child.get('id')
+                # Try different possible ID field names
+                child_id = child.get('id') or child.get('childId') or child.get('child_id') or child.get('uid')
                 logger.info(f"Found child: {CHILD_NAME} with ID: {child_id}")
-                return True
+                if child_id:
+                    return True
+                else:
+                    logger.error(f"Child found but ID is None. Full child data: {child}")
+                    return False
 
         logger.error(f"Child '{CHILD_NAME}' not found in Huckleberry account")
         return False
