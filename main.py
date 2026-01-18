@@ -1,7 +1,9 @@
 """
 Huckleberry Alexa Integration
-A Flask web service that receives voice commands from Alexa (via IFTTT webhooks)
+A Flask web service that receives voice commands from Alexa (via Voice Monkey webhooks)
 and logs baby care activities to the Huckleberry baby tracking app.
+
+Supports starting, stopping, pausing, and resuming feeding and sleep timers.
 
 Author: Alex & Leila
 Date: January 2026
@@ -110,9 +112,10 @@ def parse_command(command: str) -> Tuple[Optional[str], Dict[str, Any]]:
 
     Examples:
         "log a poo" -> ('diaper', {'type': 'poo'})
-        "log a big yellow poo" -> ('diaper', {'type': 'poo', 'poo_size': 'large', 'poo_color': 'yellow'})
-        "log a left feed" -> ('feed', {'side': 'left'})
-        "log a 120ml bottle" -> ('bottle', {'amount_ml': 120})
+        "start a left feed" -> ('feed', {'side': 'left'})
+        "stop breastfeed" -> ('stop_feed', {})
+        "pause sleep" -> ('pause_sleep', {})
+        "switch feeding side" -> ('switch_feed', {})
     """
     if not command:
         return None, {}
@@ -125,9 +128,60 @@ def parse_command(command: str) -> Tuple[Optional[str], Dict[str, Any]]:
     activity_type = None
     details: Dict[str, Any] = {}
 
-    # 1. Check for bottle feeding
+    # Detect action modifiers first (stop, pause, resume, switch, cancel)
+    action_modifier = None
+    if 'stop' in cmd or 'end' in cmd or 'finish' in cmd or 'complete' in cmd:
+        action_modifier = 'stop'
+    elif 'pause' in cmd:
+        action_modifier = 'pause'
+    elif 'resume' in cmd or 'continue' in cmd:
+        action_modifier = 'resume'
+    elif 'switch' in cmd:
+        action_modifier = 'switch'
+    elif 'cancel' in cmd:
+        action_modifier = 'cancel'
+
+    # 1. Check for breastfeeding (check before bottle to avoid conflicts)
+    feed_keywords = ['feed', 'feeding', 'breast', 'nurse', 'nursing']
+    if any(keyword in cmd for keyword in feed_keywords):
+        if action_modifier == 'stop':
+            activity_type = 'stop_feed'
+        elif action_modifier == 'pause':
+            activity_type = 'pause_feed'
+        elif action_modifier == 'resume':
+            activity_type = 'resume_feed'
+        elif action_modifier == 'switch':
+            activity_type = 'switch_feed'
+        elif action_modifier == 'cancel':
+            activity_type = 'cancel_feed'
+        else:
+            activity_type = 'feed'
+            # Determine side (left or right)
+            if 'right' in cmd:
+                details['side'] = 'right'
+            elif 'left' in cmd:
+                details['side'] = 'left'
+            else:
+                # Default to left
+                details['side'] = DEFAULT_FEED_SIDE
+
+    # 2. Check for sleep
+    sleep_keywords = ['sleep', 'nap', 'sleeping', 'napping']
+    if not activity_type and any(keyword in cmd for keyword in sleep_keywords):
+        if action_modifier == 'stop':
+            activity_type = 'stop_sleep'
+        elif action_modifier == 'pause':
+            activity_type = 'pause_sleep'
+        elif action_modifier == 'resume':
+            activity_type = 'resume_sleep'
+        elif action_modifier == 'cancel':
+            activity_type = 'cancel_sleep'
+        else:
+            activity_type = 'sleep'
+
+    # 3. Check for bottle feeding
     bottle_keywords = ['bottle']
-    if any(keyword in cmd for keyword in bottle_keywords):
+    if not activity_type and any(keyword in cmd for keyword in bottle_keywords):
         activity_type = 'bottle'
 
         # Extract amount (ml or oz)
@@ -143,25 +197,6 @@ def parse_command(command: str) -> Tuple[Optional[str], Dict[str, Any]]:
         else:
             # Default to 120ml
             details['amount_ml'] = DEFAULT_BOTTLE_ML
-
-    # 2. Check for breastfeeding
-    feed_keywords = ['feed', 'feeding', 'breast', 'nurse', 'nursing']
-    if not activity_type and any(keyword in cmd for keyword in feed_keywords):
-        activity_type = 'feed'
-
-        # Determine side (left or right)
-        if 'right' in cmd:
-            details['side'] = 'right'
-        elif 'left' in cmd:
-            details['side'] = 'left'
-        else:
-            # Default to left
-            details['side'] = DEFAULT_FEED_SIDE
-
-    # 3. Check for sleep
-    sleep_keywords = ['sleep', 'nap', 'sleeping', 'napping']
-    if not activity_type and any(keyword in cmd for keyword in sleep_keywords):
-        activity_type = 'sleep'
 
     # 4. Check for diaper (poo/pee)
     diaper_keywords = ['diaper', 'poo', 'poop', 'pee', 'wee', 'wet']
@@ -226,7 +261,7 @@ def log_activity(activity_type: str, details: Dict[str, Any]) -> Dict[str, Any]:
     Log activity to Huckleberry using the API.
 
     Args:
-        activity_type: Type of activity ('feed', 'bottle', 'diaper', 'sleep')
+        activity_type: Type of activity (feed, bottle, diaper, sleep, stop_feed, pause_feed, etc.)
         details: Dictionary containing activity-specific details
 
     Returns:
@@ -245,18 +280,72 @@ def log_activity(activity_type: str, details: Dict[str, Any]) -> Dict[str, Any]:
     try:
         logger.info(f"Logging {activity_type} activity with details: {details}")
 
+        # Breastfeeding activities
         if activity_type == 'feed':
             # Start breastfeeding session
             side = details.get('side', DEFAULT_FEED_SIDE)
             huckleberry_api.start_feeding(child_id, side=side)
             message = f"Started {side} breastfeeding session"
 
+        elif activity_type == 'stop_feed':
+            # Complete breastfeeding session and save
+            huckleberry_api.complete_feeding(child_id)
+            message = "Completed and saved breastfeeding session"
+
+        elif activity_type == 'pause_feed':
+            # Pause breastfeeding session
+            huckleberry_api.pause_feeding(child_id)
+            message = "Paused breastfeeding session"
+
+        elif activity_type == 'resume_feed':
+            # Resume breastfeeding session
+            huckleberry_api.resume_feeding(child_id)
+            message = "Resumed breastfeeding session"
+
+        elif activity_type == 'switch_feed':
+            # Switch feeding side (left <-> right)
+            huckleberry_api.switch_feeding_side(child_id)
+            message = "Switched feeding side"
+
+        elif activity_type == 'cancel_feed':
+            # Cancel feeding without saving
+            huckleberry_api.cancel_feeding(child_id)
+            message = "Cancelled breastfeeding session (not saved)"
+
+        # Sleep activities
+        elif activity_type == 'sleep':
+            # Start sleep session
+            huckleberry_api.start_sleep(child_id)
+            message = "Started sleep session"
+
+        elif activity_type == 'stop_sleep':
+            # Complete sleep session and save
+            huckleberry_api.complete_sleep(child_id)
+            message = "Completed and saved sleep session"
+
+        elif activity_type == 'pause_sleep':
+            # Pause sleep session
+            huckleberry_api.pause_sleep(child_id)
+            message = "Paused sleep session"
+
+        elif activity_type == 'resume_sleep':
+            # Resume sleep session
+            huckleberry_api.resume_sleep(child_id)
+            message = "Resumed sleep session"
+
+        elif activity_type == 'cancel_sleep':
+            # Cancel sleep without saving
+            huckleberry_api.cancel_sleep(child_id)
+            message = "Cancelled sleep session (not saved)"
+
+        # Bottle feeding
         elif activity_type == 'bottle':
             # Log bottle feeding
             amount_ml = details.get('amount_ml', DEFAULT_BOTTLE_ML)
             huckleberry_api.log_bottle(child_id, amount_ml=amount_ml)
             message = f"Logged {amount_ml}ml bottle feed"
 
+        # Diaper changes
         elif activity_type == 'diaper':
             # Log diaper change
             diaper_type = details.get('type', DEFAULT_DIAPER_TYPE)
@@ -284,11 +373,6 @@ def log_activity(activity_type: str, details: Dict[str, Any]) -> Dict[str, Any]:
                 desc.append(details['poo_color'])
             desc.append(diaper_type)
             message = f"Logged {' '.join(desc)} diaper change"
-
-        elif activity_type == 'sleep':
-            # Start sleep session
-            huckleberry_api.start_sleep(child_id)
-            message = "Started sleep session"
 
         else:
             logger.error(f"Unknown activity type: {activity_type}")
@@ -341,7 +425,7 @@ def health_check() -> Response:
 @app.route('/webhook', methods=['POST'])
 def webhook() -> Response:
     """
-    Main webhook endpoint for IFTTT requests.
+    Main webhook endpoint for Voice Monkey requests.
 
     Expected JSON body:
         {
@@ -421,14 +505,18 @@ def list_commands() -> Response:
     """
     commands = {
         'breastfeeding': {
-            'simple': [
-                'log a feed',
-                'log a feeding'
-            ],
-            'detailed': [
+            'start': [
+                'start a breastfeed on left',
+                'start a breastfeed on right',
                 'log a left feed',
-                'log a right feed',
-                'log a left nursing session'
+                'log a right feed'
+            ],
+            'control': [
+                'stop breastfeed',
+                'pause breastfeed',
+                'resume breastfeed',
+                'switch feeding side',
+                'cancel breastfeed'
             ]
         },
         'bottle': {
@@ -437,16 +525,16 @@ def list_commands() -> Response:
             ],
             'detailed': [
                 'log a 120ml bottle',
-                'log a 4oz bottle',
-                'log a 150ml bottle'
+                'log a 150ml bottle',
+                'log a 180ml bottle'
             ]
         },
         'diaper': {
             'simple': [
                 'log a poo',
+                'log a wee',
                 'log a pee',
-                'log a diaper',
-                'log a poo and pee'
+                'log a wee and poo'
             ],
             'detailed': [
                 'log a big poo',
@@ -459,18 +547,25 @@ def list_commands() -> Response:
             'colors': ['yellow', 'brown', 'green', 'dark', 'black']
         },
         'sleep': {
-            'simple': [
+            'start': [
                 'start sleep',
-                'log a nap',
-                'start sleeping'
+                'start a nap'
+            ],
+            'control': [
+                'stop sleep',
+                'pause sleep',
+                'resume sleep',
+                'cancel sleep'
             ]
         },
         'notes': [
             'Commands are case-insensitive',
             'Default side for feeding is left',
             'Default amount for bottle is 120ml',
-            'Default type for diaper is poo',
-            'Sizes and colors are optional for diapers'
+            'Use stop/complete to save timed sessions (feeding/sleep)',
+            'Use pause/resume to temporarily pause timers',
+            'Use cancel to discard a session without saving',
+            'Switch feeding side automatically switches left <-> right'
         ]
     }
 
