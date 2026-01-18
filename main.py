@@ -37,6 +37,7 @@ HUCKLEBERRY_EMAIL = os.getenv('HUCKLEBERRY_EMAIL')
 HUCKLEBERRY_PASSWORD = os.getenv('HUCKLEBERRY_PASSWORD')
 CHILD_NAME = os.getenv('CHILD_NAME')
 WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET')
+TIMEZONE = os.getenv('TIMEZONE', 'Europe/London')  # Default to UK timezone
 PORT = int(os.getenv('PORT', 5000))
 
 # Constants
@@ -66,7 +67,8 @@ def init_huckleberry() -> bool:
             return False
 
         logger.info("Initializing Huckleberry API connection...")
-        huckleberry_api = HuckleberryAPI(HUCKLEBERRY_EMAIL, HUCKLEBERRY_PASSWORD)
+        logger.info(f"Using timezone: {TIMEZONE}")
+        huckleberry_api = HuckleberryAPI(HUCKLEBERRY_EMAIL, HUCKLEBERRY_PASSWORD, TIMEZONE)
 
         # Get children and find matching child
         children = huckleberry_api.get_children()

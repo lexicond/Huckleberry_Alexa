@@ -106,7 +106,18 @@ All hands-free, while holding baby Kai!
    - ⚠️ **MUST MATCH EXACTLY** how it appears in Huckleberry app
    - Tap "Add"
 
-5. **Add Variable #4: WEBHOOK_SECRET**
+5. **Add Variable #4: TIMEZONE**
+   - Tap "+ New Variable"
+   - **Variable Name:** `TIMEZONE`
+   - **Value:** `Europe/London`
+   - ℹ️ This sets your timezone for activity timestamps
+   - Common timezones:
+     - UK: `Europe/London`
+     - US East: `America/New_York`
+     - US West: `America/Los_Angeles`
+   - Tap "Add"
+
+6. **Add Variable #5: WEBHOOK_SECRET**
    - Tap "+ New Variable"
    - **Variable Name:** `WEBHOOK_SECRET`
    - **Value:** Create a random secret
@@ -121,10 +132,11 @@ All hands-free, while holding baby Kai!
 
    - Tap "Add"
 
-6. **Verify all 4 variables are set:**
+7. **Verify all 5 variables are set:**
    - HUCKLEBERRY_EMAIL ✅
    - HUCKLEBERRY_PASSWORD ✅
    - CHILD_NAME ✅
+   - TIMEZONE ✅
    - WEBHOOK_SECRET ✅
 
 7. **Redeploy (if needed):**
