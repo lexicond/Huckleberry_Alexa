@@ -54,6 +54,91 @@ huckleberry_api: Optional[HuckleberryAPI] = None
 child_id: Optional[str] = None
 
 
+def get_feed_duration() -> Dict[str, Any]:
+    """
+    Get the duration of the current or most recent feeding session.
+
+    Returns:
+        Dictionary with duration information and status
+    """
+    global huckleberry_api, child_id
+
+    if not huckleberry_api or not child_id:
+        return {
+            'success': False,
+            'message': 'API not initialized',
+            'is_active': False
+        }
+
+    try:
+        # Try to get the current timer state by accessing the feed document
+        # The Huckleberry API stores timer data in Firestore
+        from datetime import datetime, timedelta, timezone
+
+        # Get feed intervals from the last 24 hours to find most recent
+        end_time = datetime.now(timezone.utc)
+        start_time = end_time - timedelta(hours=24)
+
+        # Get recent feed intervals
+        intervals = huckleberry_api.get_feed_intervals(
+            child_id,
+            start_time.isoformat(),
+            end_time.isoformat()
+        )
+
+        if not intervals:
+            return {
+                'success': True,
+                'message': 'No recent feeds found',
+                'is_active': False,
+                'duration_minutes': 0
+            }
+
+        # Get the most recent interval
+        most_recent = intervals[-1] if intervals else None
+
+        if not most_recent:
+            return {
+                'success': True,
+                'message': 'No recent feeds found',
+                'is_active': False,
+                'duration_minutes': 0
+            }
+
+        # Calculate total duration
+        left_duration = most_recent.get('leftDuration', 0)
+        right_duration = most_recent.get('rightDuration', 0)
+        total_duration = left_duration + right_duration
+
+        # Check if there's an end time - if not, it might be active
+        has_end = 'end' in most_recent and most_recent['end'] is not None
+        is_active = not has_end
+
+        # If active, calculate duration including current time
+        if is_active and 'start' in most_recent:
+            start_dt = datetime.fromisoformat(most_recent['start'].replace('Z', '+00:00'))
+            elapsed = (datetime.now(timezone.utc) - start_dt).total_seconds() / 60
+            # Use elapsed time if it's greater than recorded duration
+            total_duration = max(total_duration, elapsed)
+
+        return {
+            'success': True,
+            'is_active': is_active,
+            'duration_minutes': int(total_duration),
+            'left_minutes': int(left_duration),
+            'right_minutes': int(right_duration),
+            'message': f"{'Current' if is_active else 'Last'} feed: {int(total_duration)} minutes total"
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting feed duration: {str(e)}", exc_info=True)
+        return {
+            'success': False,
+            'message': f'Error retrieving feed information: {str(e)}',
+            'is_active': False
+        }
+
+
 def init_huckleberry() -> bool:
     """
     Initialize Huckleberry API connection and get child ID.
@@ -116,6 +201,7 @@ def parse_command(command: str) -> Tuple[Optional[str], Dict[str, Any]]:
         "stop breastfeed" -> ('stop_feed', {})
         "pause sleep" -> ('pause_sleep', {})
         "switch feeding side" -> ('switch_feed', {})
+        "how long is the feed" -> ('query_feed', {})
     """
     if not command:
         return None, {}
@@ -128,7 +214,14 @@ def parse_command(command: str) -> Tuple[Optional[str], Dict[str, Any]]:
     activity_type = None
     details: Dict[str, Any] = {}
 
-    # Detect action modifiers first (stop, pause, resume, switch, cancel)
+    # Check for query commands first (how long, status, etc.)
+    query_keywords = ['how long', 'duration', 'time']
+    if any(keyword in cmd for keyword in query_keywords):
+        feed_query_keywords = ['feed', 'feeding', 'breast', 'nurse']
+        if any(keyword in cmd for keyword in feed_query_keywords):
+            return 'query_feed', {}
+
+    # Detect action modifiers (stop, pause, resume, switch, cancel)
     action_modifier = None
     if 'stop' in cmd or 'end' in cmd or 'finish' in cmd or 'complete' in cmd:
         action_modifier = 'stop'
@@ -280,8 +373,44 @@ def log_activity(activity_type: str, details: Dict[str, Any]) -> Dict[str, Any]:
     try:
         logger.info(f"Logging {activity_type} activity with details: {details}")
 
+        # Query activities
+        if activity_type == 'query_feed':
+            # Get feed duration information
+            feed_info = get_feed_duration()
+
+            if not feed_info['success']:
+                return feed_info
+
+            duration = feed_info.get('duration_minutes', 0)
+            is_active = feed_info.get('is_active', False)
+            left_mins = feed_info.get('left_minutes', 0)
+            right_mins = feed_info.get('right_minutes', 0)
+
+            if duration == 0:
+                message = "No recent feeds found in the last 24 hours"
+            elif is_active:
+                if left_mins > 0 and right_mins > 0:
+                    message = f"Current feed is {duration} minutes total ({left_mins} left, {right_mins} right)"
+                else:
+                    side = "left" if left_mins > 0 else "right"
+                    message = f"Current feed is {duration} minutes on {side} side"
+            else:
+                if left_mins > 0 and right_mins > 0:
+                    message = f"Last feed was {duration} minutes total ({left_mins} left, {right_mins} right)"
+                else:
+                    side = "left" if left_mins > 0 else "right"
+                    message = f"Last feed was {duration} minutes on {side} side"
+
+            return {
+                'success': True,
+                'message': message,
+                'activity_type': activity_type,
+                'details': feed_info,
+                'timestamp': datetime.utcnow().isoformat()
+            }
+
         # Breastfeeding activities
-        if activity_type == 'feed':
+        elif activity_type == 'feed':
             # Start breastfeeding session
             side = details.get('side', DEFAULT_FEED_SIDE)
             huckleberry_api.start_feeding(child_id, side=side)
@@ -517,6 +646,11 @@ def list_commands() -> Response:
                 'resume breastfeed',
                 'switch feeding side',
                 'cancel breastfeed'
+            ],
+            'query': [
+                'how long is the feed',
+                'how long was the last feed',
+                'feed duration'
             ]
         },
         'bottle': {
@@ -565,7 +699,9 @@ def list_commands() -> Response:
             'Use stop/complete to save timed sessions (feeding/sleep)',
             'Use pause/resume to temporarily pause timers',
             'Use cancel to discard a session without saving',
-            'Switch feeding side automatically switches left <-> right'
+            'Switch feeding side automatically switches left <-> right',
+            'Query commands return duration of current or most recent feed',
+            'Feed queries check the last 24 hours of activity'
         ]
     }
 
